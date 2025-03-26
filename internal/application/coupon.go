@@ -6,7 +6,7 @@ import (
 	"coupon-service/internal/infrastructure/cache"
 	"coupon-service/internal/infrastructure/repository"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"github.com/redis/go-redis/v9"
 	"log"
 	"time"
@@ -27,6 +27,24 @@ func NewCouponService(
 	}
 }
 
+const (
+	ValidateJsonUnmarshalError = IssueCouponError("ValidateJsonUnmarshalError")
+	CouponNotStartedError      = IssueCouponError("coupon issuance has not started yet")
+	CouponExpiredError         = IssueCouponError("the coupon issuance period has expired")
+	DuplicatedCouponUserError  = IssueCouponError("coupon already issued to this user")
+	CouponAmountRecoveryError  = IssueCouponError("failed to increment coupon amount for recover")
+	DeleteRecoveryError        = IssueCouponError("failed to delete coupon for recover")
+	AllCouponIssuedError       = IssueCouponError("all coupons has been issued")
+	CacheAddUserError          = IssueCouponError("failed to add coupon")
+	CouponDecrError            = IssueCouponError("failed to decrement coupon")
+	DataKeyNotFoundError       = IssueCouponError("data key not found")
+	IssuedCouponCreationError  = IssueCouponError("failed to create coupon code")
+)
+
+type IssueCouponError string
+
+func (e IssueCouponError) Error() string { return string(e) }
+
 func (c *CouponService) IssueCoupon(
 	ctx context.Context,
 	couponId string,
@@ -42,18 +60,14 @@ func (c *CouponService) IssueCoupon(
 		return err
 	}
 
-	err = c.controlConcurrent(ctx, userStoreKey, userId, couponKey)
-	if err != nil {
-		return err
+	err2 := c.controlConcurrent(ctx, userStoreKey, userId, couponKey)
+	if err2 != nil {
+		return err2
 	}
 
-	issuedCoupon, err := domain.NewIssuedCoupon(couponId, now)
-	if err != nil {
-		return err
-	}
-	err = c.issuedCouponRepository.Save(issuedCoupon)
-	if err != nil {
-		return err
+	err3 := c.issuedCouponRepository.Save(domain.NewIssuedCoupon(couponId, now))
+	if err3 != nil {
+		return IssuedCouponCreationError
 	}
 
 	return nil
@@ -63,16 +77,16 @@ func (c *CouponService) validateCouponEvent(ctx context.Context, dataKey string,
 	var coupon domain.Coupon
 	data, err := c.cache.Get(ctx, dataKey)
 	if err != nil {
-		return err
+		return DataKeyNotFoundError
 	}
-	if err := json.Unmarshal(data, &coupon); err != nil {
-		return err
+	if err2 := json.Unmarshal(data, &coupon); err2 != nil {
+		return ValidateJsonUnmarshalError
 	}
 	if coupon.IssuedAt.After(now) {
-		return errors.New("coupon issuance has not started yet")
+		return CouponNotStartedError
 	}
 	if coupon.ExpiresAt.Before(now) {
-		return errors.New("the coupon issuance period has expired")
+		return CouponExpiredError
 	}
 	return nil
 }
@@ -85,30 +99,32 @@ func (c *CouponService) controlConcurrent(
 ) error {
 	added, err := c.cache.SetAdd(ctx, userStoreKey, userId)
 	if err != nil {
-		return err
+		fmt.Println(err.Error())
+		return CacheAddUserError
 	}
 	if added == false {
-		return errors.New("coupon already issued to this user")
+		return DuplicatedCouponUserError
 	}
 
 	count, err := c.cache.Decr(ctx, couponKey)
 	if err != nil {
-		return err
+		fmt.Println(err.Error())
+		return CouponDecrError
 	}
 
 	if count < 0 {
 		_, incrErr := c.cache.Incr(ctx, couponKey)
 		if incrErr != nil {
 			log.Println(incrErr)
-			return errors.New("failed to increment coupon amount for recover")
+			return CouponAmountRecoveryError
 		}
 
 		_, delErr := c.cache.SetDel(ctx, userStoreKey, userId)
 		if delErr != nil {
 			log.Println(delErr)
-			return errors.New("failed to delete coupon for recover")
+			return DeleteRecoveryError
 		}
-		return errors.New("all coupons has been issued")
+		return AllCouponIssuedError
 	}
 	return nil
 }

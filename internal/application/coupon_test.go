@@ -65,7 +65,7 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 
 		for i := 0; i < numUsers; i++ {
 			wg.Add(1)
-			userID := fmt.Sprintf("concurrent-user-%d", i)
+			userID := uuid.New().String()
 
 			go func(uid string) {
 				defer wg.Done()

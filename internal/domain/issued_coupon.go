@@ -14,11 +14,8 @@ type IssuedCoupon struct {
 	ModifiedAt time.Time `json:"modified_at"`
 }
 
-func NewIssuedCoupon(couponId string, createdAt time.Time) (*IssuedCoupon, error) {
-	id, err := uuid.NewUUID()
-	if err != nil {
-		return nil, err
-	}
+func NewIssuedCoupon(couponId string, createdAt time.Time) *IssuedCoupon {
+	id := uuid.New()
 
 	return &IssuedCoupon{
 		ID:         id.String(),
@@ -26,7 +23,7 @@ func NewIssuedCoupon(couponId string, createdAt time.Time) (*IssuedCoupon, error
 		Code:       generateUniqueCode(),
 		CreatedAt:  createdAt,
 		ModifiedAt: createdAt,
-	}, nil
+	}
 }
 
 func generateUniqueCode() string {
