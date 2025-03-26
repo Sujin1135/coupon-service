@@ -2,7 +2,6 @@ package cache
 
 import (
 	"context"
-	"coupon-service/internal/config"
 	"errors"
 	"fmt"
 	"github.com/redis/go-redis/v9"
@@ -12,7 +11,7 @@ import (
 
 type Cache[T any] interface {
 	SetAdd(ctx context.Context, key string, value string) (bool, error)
-	SetDel(ctx context.Context, key string) (bool, error)
+	SetDel(ctx context.Context, key string, value string) (bool, error)
 	Set(ctx context.Context, key string, value T) error
 	Incr(ctx context.Context, key string) (int64, error)
 	Decr(ctx context.Context, key string) (int64, error)
@@ -35,8 +34,8 @@ func (c cache[T]) SetAdd(ctx context.Context, key string, value string) (bool, e
 	return true, nil
 }
 
-func (c cache[T]) SetDel(ctx context.Context, key string) (bool, error) {
-	result, err := c.redisClient.SRem(ctx, key).Result()
+func (c cache[T]) SetDel(ctx context.Context, key string, value string) (bool, error) {
+	result, err := c.redisClient.SRem(ctx, key, value).Result()
 	if err != nil {
 		log.Println(err)
 		return false, errors.New("occurred an error when deleting value from cache")
@@ -86,6 +85,6 @@ func (c cache[T]) ExpireAt(ctx context.Context, key string, expr time.Time) (boo
 	return result, nil
 }
 
-func NewCacheClient[T any]() Cache[T] {
-	return &cache[T]{redisClient: config.CacheClient}
+func NewCacheClient[T any](client *redis.Client) Cache[T] {
+	return &cache[T]{redisClient: client}
 }
