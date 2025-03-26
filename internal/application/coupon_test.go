@@ -102,9 +102,8 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 
 		userID := "rollback-test-user"
 
-		success, err := couponService.IssueCoupon(ctx, couponID, userID)
-		assert.False(t, success, "쿠폰이 없으므로 실패해야 함")
-		assert.NoError(t, err, "정상적인 실패이므로 오류가 없어야 함")
+		_, err := couponService.IssueCoupon(ctx, couponID, userID)
+		assert.Contains(t, err.Error(), "all coupons has been issued", "모든 쿠폰 소진 시 발생하는 에러")
 
 		isMember, err := redisContainer.Client.SIsMember(ctx, userStoreKey, userID).Result()
 		assert.NoError(t, err)

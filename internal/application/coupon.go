@@ -39,12 +39,9 @@ func (c *CouponService) IssueCoupon(ctx context.Context, couponId string, userId
 		return false, err
 	}
 
-	result, err := c.controlConcurrent(ctx, userStoreKey, userId, couponKey)
+	err = c.controlConcurrent(ctx, userStoreKey, userId, couponKey)
 	if err != nil {
-		return result, err
-	}
-	if result == false {
-		return false, nil
+		return false, err
 	}
 
 	_, err = c.couponRepository.FindOne(couponId)
@@ -73,33 +70,33 @@ func (c *CouponService) validateCouponEvent(ctx context.Context, dataKey string,
 	return nil
 }
 
-func (c *CouponService) controlConcurrent(ctx context.Context, userStoreKey string, userId string, couponKey string) (bool, error) {
+func (c *CouponService) controlConcurrent(ctx context.Context, userStoreKey string, userId string, couponKey string) error {
 	added, err := c.cache.SetAdd(ctx, userStoreKey, userId)
 	if err != nil {
-		return false, err
+		return err
 	}
 	if added == false {
-		return false, errors.New("coupon already issued to this user")
+		return errors.New("coupon already issued to this user")
 	}
 
 	count, err := c.cache.Decr(ctx, couponKey)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	if count < 0 {
 		_, incrErr := c.cache.Incr(ctx, couponKey)
 		if incrErr != nil {
 			log.Println(incrErr)
-			return false, errors.New("failed to increment coupon amount for recover")
+			return errors.New("failed to increment coupon amount for recover")
 		}
 
 		_, delErr := c.cache.SetDel(ctx, userStoreKey, userId)
 		if delErr != nil {
 			log.Println(delErr)
-			return false, errors.New("failed to delete coupon for recover")
+			return errors.New("failed to delete coupon for recover")
 		}
-		return false, nil
+		return errors.New("all coupons has been issued")
 	}
-	return true, nil
+	return nil
 }
