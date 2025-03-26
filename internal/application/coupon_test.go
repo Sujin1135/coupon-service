@@ -8,6 +8,7 @@ import (
 	"coupon-service/internal/test"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"sync"
@@ -18,32 +19,31 @@ import (
 func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 	redisContainer, ctx := test.SetupRedisForTest(t)
 	mysqlContainer, ctx := test.SetupMySQLForTest(t)
-	couponID := "test-coupon-1"
+	couponID := uuid.New().String()
 	userStoreKey := "coupon:" + couponID + ":users"
-	const userID = "same-user-1"
+	userID := uuid.New().String()
 	couponService := NewCouponService(
 		redisContainer.Client,
-		repository.NewCouponRepository(mysqlContainer.DB),
+		repository.NewIssuedCouponRepository(mysqlContainer.DB),
 	)
 
-	mysqlContainer.MigrateEntities(&entity.CouponEntity{})
+	mysqlContainer.MigrateEntities(&entity.IssuedCouponEntity{})
 
 	t.Run("동일 사용자 중복 요청 시 false와 에러가 반환 되어야 함", func(t *testing.T) {
 		initCache(t, redisContainer, ctx, couponID, 10)
 
-		_, err := couponService.IssueCoupon(ctx, couponID, userID)
-		success2, err := couponService.IssueCoupon(ctx, couponID, userID)
+		_ = couponService.IssueCoupon(ctx, couponID, userID)
+		err := couponService.IssueCoupon(ctx, couponID, userID)
 
 		assert.Error(t, err)
-		assert.False(t, success2, "동일 사용자의 두 번째 요청은 실패해야 함")
 		assert.Contains(t, err.Error(), "already issued", "중복 발행 오류 메시지 확인")
 	})
 
 	t.Run("동일 사용자 중복 요청 시 한개의 쿠폰만 소진 되어야 한다", func(t *testing.T) {
 		initCache(t, redisContainer, ctx, couponID, 10)
 
-		_, err := couponService.IssueCoupon(ctx, couponID, userID)
-		_, err = couponService.IssueCoupon(ctx, couponID, userID)
+		_ = couponService.IssueCoupon(ctx, couponID, userID)
+		err := couponService.IssueCoupon(ctx, couponID, userID)
 
 		count, err := redisContainer.Client.Get(ctx, genCouponIdKey(couponID)).Int()
 		assert.NoError(t, err)
@@ -70,16 +70,15 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 			go func(uid string) {
 				defer wg.Done()
 
-				success, err := couponService.IssueCoupon(ctx, couponID, uid)
+				err := couponService.IssueCoupon(ctx, couponID, uid)
 
 				mu.Lock()
 				defer mu.Unlock()
 
-				if success {
-					successCount++
-				} else {
+				if err != nil {
 					failCount++
-					t.Logf("사용자 %s: 실패, 오류: %v", uid, err)
+				} else {
+					successCount++
 				}
 			}(userID)
 		}
@@ -102,7 +101,7 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 
 		userID := "rollback-test-user"
 
-		_, err := couponService.IssueCoupon(ctx, couponID, userID)
+		err := couponService.IssueCoupon(ctx, couponID, userID)
 		assert.Contains(t, err.Error(), "all coupons has been issued", "모든 쿠폰 소진 시 발생하는 에러")
 
 		isMember, err := redisContainer.Client.SIsMember(ctx, userStoreKey, userID).Result()
@@ -118,17 +117,19 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 func TestCouponIssueWithContainer(t *testing.T) {
 	redisContainer, ctx := test.SetupRedisForTest(t)
 	mysqlContainer, ctx := test.SetupMySQLForTest(t)
-	couponID := "test-coupon-1"
+	couponID := uuid.New().String()
 	const userID = "same-user-1"
 	couponService := NewCouponService(
 		redisContainer.Client,
-		repository.NewCouponRepository(mysqlContainer.DB),
+		repository.NewIssuedCouponRepository(mysqlContainer.DB),
 	)
+
+	mysqlContainer.MigrateEntities(&entity.IssuedCouponEntity{})
 
 	t.Run("존재하지 않은 쿠폰 발급 요청 시 에러가 발생한다", func(t *testing.T) {
 		initCache(t, redisContainer, ctx, couponID, 10)
 
-		_, err := couponService.IssueCoupon(ctx, "invalid-coupon", userID)
+		err := couponService.IssueCoupon(ctx, "invalid-coupon", userID)
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "key not found", "존재하지 않은 쿠폰 발급 요청")
@@ -149,7 +150,7 @@ func TestCouponIssueWithContainer(t *testing.T) {
 		initCache(t, redisContainer, ctx, couponID, 10)
 		createCouponCache(ctx, redisContainer, couponID, coupon)
 
-		_, err := couponService.IssueCoupon(ctx, couponID, userID)
+		err := couponService.IssueCoupon(ctx, couponID, userID)
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "coupon issuance has not started yet", "발급 시작 전 요청 시 발생")
@@ -170,10 +171,19 @@ func TestCouponIssueWithContainer(t *testing.T) {
 		initCache(t, redisContainer, ctx, couponID, 10)
 		createCouponCache(ctx, redisContainer, couponID, coupon)
 
-		_, err := couponService.IssueCoupon(ctx, couponID, userID)
+		err := couponService.IssueCoupon(ctx, couponID, userID)
 
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "the coupon issuance period has expired", "발급 만료 후 요청 시 발생")
+	})
+
+	t.Run("쿠폰 발급 후 발급된 쿠폰이 정상적으로 조회 되어야 한다", func(t *testing.T) {
+		initCache(t, redisContainer, ctx, couponID, 10)
+
+		_ = couponService.IssueCoupon(ctx, couponID, userID)
+
+		sut := repository.NewIssuedCouponRepository(mysqlContainer.DB).FindByCouponId(couponID)[0]
+		assert.Equal(t, couponID, sut.CouponID)
 	})
 }
 

@@ -7,28 +7,31 @@ import (
 	"coupon-service/internal/infrastructure/repository"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/redis/go-redis/v9"
 	"log"
 	"time"
 )
 
 type CouponService struct {
-	cache            cache.Cache
-	couponRepository *repository.CouponRepository
+	cache                  cache.Cache
+	issuedCouponRepository *repository.IssuedCouponRepository
 }
 
 func NewCouponService(
 	cacheClient *redis.Client,
-	couponRepository *repository.CouponRepository,
+	issuedCouponRepository *repository.IssuedCouponRepository,
 ) *CouponService {
 	return &CouponService{
-		cache:            cache.NewCacheClient(cacheClient),
-		couponRepository: couponRepository,
+		cache:                  cache.NewCacheClient(cacheClient),
+		issuedCouponRepository: issuedCouponRepository,
 	}
 }
 
-func (c *CouponService) IssueCoupon(ctx context.Context, couponId string, userId string) (bool, error) {
+func (c *CouponService) IssueCoupon(
+	ctx context.Context,
+	couponId string,
+	userId string,
+) error {
 	dataKey := "coupon:" + couponId + ":data"
 	userStoreKey := "coupon:" + couponId + ":users"
 	couponKey := "coupon:" + couponId + ":remaining"
@@ -36,20 +39,24 @@ func (c *CouponService) IssueCoupon(ctx context.Context, couponId string, userId
 
 	err := c.validateCouponEvent(ctx, dataKey, now)
 	if err != nil {
-		return false, err
+		return err
 	}
 
 	err = c.controlConcurrent(ctx, userStoreKey, userId, couponKey)
 	if err != nil {
-		return false, err
+		return err
 	}
 
-	_, err = c.couponRepository.FindOne(couponId)
+	issuedCoupon, err := domain.NewIssuedCoupon(couponId, now)
 	if err != nil {
-		fmt.Println(fmt.Sprintf("coupon was not found by id(%s)", couponId))
+		return err
+	}
+	err = c.issuedCouponRepository.Save(issuedCoupon)
+	if err != nil {
+		return err
 	}
 
-	return true, nil
+	return nil
 }
 
 func (c *CouponService) validateCouponEvent(ctx context.Context, dataKey string, now time.Time) error {
@@ -70,7 +77,12 @@ func (c *CouponService) validateCouponEvent(ctx context.Context, dataKey string,
 	return nil
 }
 
-func (c *CouponService) controlConcurrent(ctx context.Context, userStoreKey string, userId string, couponKey string) error {
+func (c *CouponService) controlConcurrent(
+	ctx context.Context,
+	userStoreKey string,
+	userId string,
+	couponKey string,
+) error {
 	added, err := c.cache.SetAdd(ctx, userStoreKey, userId)
 	if err != nil {
 		return err

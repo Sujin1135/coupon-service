@@ -21,15 +21,12 @@ func main() {
 
 	couponService := application.NewCouponService(
 		config.CacheClient,
-		repository.NewCouponRepository(config.DBClient),
+		repository.NewIssuedCouponRepository(config.DBClient),
 	)
-	result, err := couponService.IssueCoupon(ctx, "coupon-1", "user-1")
+	err = couponService.IssueCoupon(ctx, "coupon-1", "user-1")
 	if err != nil {
 		fmt.Println("occurred an error when issuing a coupon")
 	}
-	if result == false {
-		fmt.Println("failed to issue a coupon")
-	} else {
-		fmt.Println("coupon issued successfully")
-	}
+
+	fmt.Println("coupon issued successfully")
 }
