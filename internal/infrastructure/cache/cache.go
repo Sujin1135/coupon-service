@@ -9,20 +9,21 @@ import (
 	"time"
 )
 
-type Cache[T any] interface {
+type Cache interface {
 	SetAdd(ctx context.Context, key string, value string) (bool, error)
 	SetDel(ctx context.Context, key string, value string) (bool, error)
-	Set(ctx context.Context, key string, value T) error
+	Set(ctx context.Context, key string, value interface{}) error
+	Get(ctx context.Context, key string) ([]byte, error)
 	Incr(ctx context.Context, key string) (int64, error)
 	Decr(ctx context.Context, key string) (int64, error)
 	ExpireAt(ctx context.Context, key string, expr time.Time) (bool, error)
 }
 
-type cache[T any] struct {
+type cache struct {
 	redisClient *redis.Client
 }
 
-func (c cache[T]) SetAdd(ctx context.Context, key string, value string) (bool, error) {
+func (c cache) SetAdd(ctx context.Context, key string, value string) (bool, error) {
 	added, err := c.redisClient.SAdd(ctx, key, value).Result()
 	if err != nil {
 		log.Println(err)
@@ -34,7 +35,7 @@ func (c cache[T]) SetAdd(ctx context.Context, key string, value string) (bool, e
 	return true, nil
 }
 
-func (c cache[T]) SetDel(ctx context.Context, key string, value string) (bool, error) {
+func (c cache) SetDel(ctx context.Context, key string, value string) (bool, error) {
 	result, err := c.redisClient.SRem(ctx, key, value).Result()
 	if err != nil {
 		log.Println(err)
@@ -47,7 +48,7 @@ func (c cache[T]) SetDel(ctx context.Context, key string, value string) (bool, e
 	return true, nil
 }
 
-func (c cache[T]) Set(ctx context.Context, key string, value T) error {
+func (c cache) Set(ctx context.Context, key string, value interface{}) error {
 	err := c.redisClient.Set(ctx, key, value, 0).Err()
 	if err != nil {
 		fmt.Println(err)
@@ -56,7 +57,21 @@ func (c cache[T]) Set(ctx context.Context, key string, value T) error {
 	return nil
 }
 
-func (c cache[T]) Incr(ctx context.Context, key string) (int64, error) {
+func (c cache) Get(ctx context.Context, key string) ([]byte, error) {
+	data, err := c.redisClient.Get(ctx, key).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			fmt.Println(err)
+			return nil, errors.New("key not found")
+		}
+		fmt.Println(err)
+		return nil, errors.New("occurred an error when getting value from cache")
+	}
+
+	return data, nil
+}
+
+func (c cache) Incr(ctx context.Context, key string) (int64, error) {
 	result, err := c.redisClient.Incr(ctx, key).Result()
 	if err != nil {
 		log.Println(err)
@@ -66,7 +81,7 @@ func (c cache[T]) Incr(ctx context.Context, key string) (int64, error) {
 	return result, nil
 }
 
-func (c cache[T]) Decr(ctx context.Context, key string) (int64, error) {
+func (c cache) Decr(ctx context.Context, key string) (int64, error) {
 	result, err := c.redisClient.Decr(ctx, key).Result()
 	if err != nil {
 		log.Println(err)
@@ -76,7 +91,7 @@ func (c cache[T]) Decr(ctx context.Context, key string) (int64, error) {
 	return result, nil
 }
 
-func (c cache[T]) ExpireAt(ctx context.Context, key string, expr time.Time) (bool, error) {
+func (c cache) ExpireAt(ctx context.Context, key string, expr time.Time) (bool, error) {
 	result, err := c.redisClient.ExpireAt(ctx, key, expr).Result()
 	if err != nil {
 		log.Println(err)
@@ -85,6 +100,6 @@ func (c cache[T]) ExpireAt(ctx context.Context, key string, expr time.Time) (boo
 	return result, nil
 }
 
-func NewCacheClient[T any](client *redis.Client) Cache[T] {
-	return &cache[T]{redisClient: client}
+func NewCacheClient(client *redis.Client) Cache {
+	return &cache{redisClient: client}
 }

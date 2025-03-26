@@ -3,6 +3,8 @@ package test
 import (
 	"context"
 	"fmt"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -18,7 +20,6 @@ type RedisContainer struct {
 	Client    *redis.Client
 }
 
-// NewRedisContainer 새 Redis 컨테이너 시작
 func NewRedisContainer(ctx context.Context) (*RedisContainer, error) {
 	// Redis 컨테이너 요청 설정
 	req := testcontainers.ContainerRequest{
@@ -70,7 +71,6 @@ func NewRedisContainer(ctx context.Context) (*RedisContainer, error) {
 	}, nil
 }
 
-// Cleanup 컨테이너 종료 및 리소스 정리
 func (rc *RedisContainer) Cleanup(ctx context.Context) error {
 	if rc.Client != nil {
 		if err := rc.Client.Close(); err != nil {
@@ -87,12 +87,100 @@ func (rc *RedisContainer) Cleanup(ctx context.Context) error {
 	return nil
 }
 
-// FlushAll Redis 데이터베이스의 모든 데이터 삭제
 func (rc *RedisContainer) FlushAll(ctx context.Context) error {
 	return rc.Client.FlushAll(ctx).Err()
 }
 
-// WithTimeout 타임아웃이 있는 컨텍스트 생성
-func WithTimeout(seconds int) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), time.Duration(seconds)*time.Second)
+type MySQLContainer struct {
+	Container testcontainers.Container
+	URI       string
+	Host      string
+	Port      string
+	DB        *gorm.DB
+	Username  string
+	Password  string
+	Database  string
+}
+
+func NewMySQLContainer(ctx context.Context) (*MySQLContainer, error) {
+	// 기본 설정
+	username := "root"
+	password := "test_password"
+	database := "coupon_service_test"
+
+	// MySQL 컨테이너 요청 설정
+	req := testcontainers.ContainerRequest{
+		Image:        "mysql:8.0",
+		ExposedPorts: []string{"3306/tcp"},
+		Env: map[string]string{
+			"MYSQL_ROOT_PASSWORD": password,
+			"MYSQL_DATABASE":      database,
+		},
+		WaitingFor: wait.ForLog("port: 3306  MySQL Community Server - GPL").
+			WithStartupTimeout(time.Second * 60),
+	}
+
+	// 컨테이너 시작
+	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
+		ContainerRequest: req,
+		Started:          true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("MySQL 컨테이너 시작 실패: %w", err)
+	}
+
+	// 호스트 및 포트 정보 가져오기
+	host, err := container.Host(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("컨테이너 호스트 가져오기 실패: %w", err)
+	}
+
+	port, err := container.MappedPort(ctx, "3306")
+	if err != nil {
+		return nil, fmt.Errorf("매핑된 포트 가져오기 실패: %w", err)
+	}
+
+	portString := port.Port()
+	uri := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local",
+		username, password, host, portString, database)
+
+	var db *gorm.DB
+	var connectErr error
+	for i := 0; i < 6; i++ {
+		db, connectErr = gorm.Open(mysql.Open(uri), &gorm.Config{})
+		if connectErr == nil {
+			break
+		}
+		time.Sleep(5 * time.Second)
+	}
+
+	if connectErr != nil {
+		_ = container.Terminate(ctx)
+		return nil, fmt.Errorf("MySQL 연결 실패: %w", connectErr)
+	}
+
+	return &MySQLContainer{
+		Container: container,
+		URI:       uri,
+		Host:      host,
+		Port:      portString,
+		DB:        db,
+		Username:  username,
+		Password:  password,
+		Database:  database,
+	}, nil
+}
+
+func (mc *MySQLContainer) Cleanup(ctx context.Context) error {
+	if mc.Container != nil {
+		if err := mc.Container.Terminate(ctx); err != nil {
+			return fmt.Errorf("MySQL 컨테이너 종료 실패: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (mc *MySQLContainer) MigrateEntities(entities ...interface{}) error {
+	return mc.DB.AutoMigrate(entities...)
 }

@@ -2,25 +2,42 @@ package application
 
 import (
 	"context"
+	"coupon-service/internal/domain"
 	"coupon-service/internal/infrastructure/cache"
+	"coupon-service/internal/infrastructure/repository"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/redis/go-redis/v9"
 	"log"
+	"time"
 )
 
 type CouponService struct {
-	cache cache.Cache[int]
+	cache            cache.Cache
+	couponRepository *repository.CouponRepository
 }
 
-func NewCouponService(cacheClient *redis.Client) *CouponService {
+func NewCouponService(
+	cacheClient *redis.Client,
+	couponRepository *repository.CouponRepository,
+) *CouponService {
 	return &CouponService{
-		cache: cache.NewCacheClient[int](cacheClient),
+		cache:            cache.NewCacheClient(cacheClient),
+		couponRepository: couponRepository,
 	}
 }
 
 func (c *CouponService) IssueCoupon(ctx context.Context, couponId string, userId string) (bool, error) {
+	dataKey := "coupon:" + couponId + ":data"
 	userStoreKey := "coupon:" + couponId + ":users"
 	couponKey := "coupon:" + couponId + ":remaining"
+	now := time.Now()
+
+	err := c.validateCouponEvent(ctx, dataKey, now)
+	if err != nil {
+		return false, err
+	}
 
 	result, err := c.controlConcurrent(ctx, userStoreKey, userId, couponKey)
 	if err != nil {
@@ -30,10 +47,30 @@ func (c *CouponService) IssueCoupon(ctx context.Context, couponId string, userId
 		return false, nil
 	}
 
-	// 쿠폰 발급 처리 (DB 저장 등)
-	// ...
+	_, err = c.couponRepository.FindOne(couponId)
+	if err != nil {
+		fmt.Println(fmt.Sprintf("coupon was not found by id(%s)", couponId))
+	}
 
 	return true, nil
+}
+
+func (c *CouponService) validateCouponEvent(ctx context.Context, dataKey string, now time.Time) error {
+	var coupon domain.Coupon
+	data, err := c.cache.Get(ctx, dataKey)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, &coupon); err != nil {
+		return err
+	}
+	if coupon.IssuedAt.After(now) {
+		return errors.New("coupon issuance has not started yet")
+	}
+	if coupon.ExpiresAt.Before(now) {
+		return errors.New("the coupon issuance period has expired")
+	}
+	return nil
 }
 
 func (c *CouponService) controlConcurrent(ctx context.Context, userStoreKey string, userId string, couponKey string) (bool, error) {

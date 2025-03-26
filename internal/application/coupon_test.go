@@ -2,24 +2,34 @@ package application
 
 import (
 	"context"
+	"coupon-service/internal/domain"
+	"coupon-service/internal/infrastructure/entity"
+	"coupon-service/internal/infrastructure/repository"
 	"coupon-service/internal/test"
+	"encoding/json"
 	"fmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 	redisContainer, ctx := test.SetupRedisForTest(t)
+	mysqlContainer, ctx := test.SetupMySQLForTest(t)
 	couponID := "test-coupon-1"
 	userStoreKey := "coupon:" + couponID + ":users"
-	couponKey := "coupon:" + couponID + ":remaining"
 	const userID = "same-user-1"
-	couponService := NewCouponService(redisContainer.Client)
+	couponService := NewCouponService(
+		redisContainer.Client,
+		repository.NewCouponRepository(mysqlContainer.DB),
+	)
+
+	mysqlContainer.MigrateEntities(&entity.CouponEntity{})
 
 	t.Run("동일 사용자 중복 요청 시 false와 에러가 반환 되어야 함", func(t *testing.T) {
-		initCache(t, redisContainer, ctx, couponKey, 10)
+		initCache(t, redisContainer, ctx, couponID, 10)
 
 		_, err := couponService.IssueCoupon(ctx, couponID, userID)
 		success2, err := couponService.IssueCoupon(ctx, couponID, userID)
@@ -30,12 +40,12 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 	})
 
 	t.Run("동일 사용자 중복 요청 시 한개의 쿠폰만 소진 되어야 한다", func(t *testing.T) {
-		initCache(t, redisContainer, ctx, couponKey, 10)
+		initCache(t, redisContainer, ctx, couponID, 10)
 
 		_, err := couponService.IssueCoupon(ctx, couponID, userID)
 		_, err = couponService.IssueCoupon(ctx, couponID, userID)
 
-		count, err := redisContainer.Client.Get(ctx, couponKey).Int()
+		count, err := redisContainer.Client.Get(ctx, genCouponIdKey(couponID)).Int()
 		assert.NoError(t, err)
 		assert.Equal(t, 9, count, "쿠폰이 1개만 소비되어야 함")
 	})
@@ -46,7 +56,7 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 			couponLimit = 5
 		)
 
-		initCache(t, redisContainer, ctx, couponKey, couponLimit)
+		initCache(t, redisContainer, ctx, couponID, couponLimit)
 
 		var wg sync.WaitGroup
 		successCount := 0
@@ -76,7 +86,7 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 
 		wg.Wait()
 
-		count, err := redisContainer.Client.Get(ctx, couponKey).Int()
+		count, err := redisContainer.Client.Get(ctx, genCouponIdKey(couponID)).Int()
 		assert.NoError(t, err)
 		assert.Equal(t, 0, count, "모든 쿠폰이 소진되어야 함")
 		assert.Equal(t, couponLimit, successCount, fmt.Sprintf("정확히 %d명만 쿠폰을 발급받아야 함\n", couponLimit))
@@ -88,7 +98,7 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 	})
 
 	t.Run("롤백 로직 테스트", func(t *testing.T) {
-		initCache(t, redisContainer, ctx, couponKey, 0)
+		initCache(t, redisContainer, ctx, couponID, 0)
 
 		userID := "rollback-test-user"
 
@@ -100,9 +110,71 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 		assert.NoError(t, err)
 		assert.False(t, isMember, "사용자가 Set에 추가되지 않아야 함 (롤백 성공)")
 
-		count, err := redisContainer.Client.Get(ctx, couponKey).Int()
+		count, err := redisContainer.Client.Get(ctx, genCouponIdKey(couponID)).Int()
 		assert.NoError(t, err)
 		assert.Equal(t, 0, count, "카운터는 0을 유지해야 함")
+	})
+}
+
+func TestCouponIssueWithContainer(t *testing.T) {
+	redisContainer, ctx := test.SetupRedisForTest(t)
+	mysqlContainer, ctx := test.SetupMySQLForTest(t)
+	couponID := "test-coupon-1"
+	const userID = "same-user-1"
+	couponService := NewCouponService(
+		redisContainer.Client,
+		repository.NewCouponRepository(mysqlContainer.DB),
+	)
+
+	t.Run("존재하지 않은 쿠폰 발급 요청 시 에러가 발생한다", func(t *testing.T) {
+		initCache(t, redisContainer, ctx, couponID, 10)
+
+		_, err := couponService.IssueCoupon(ctx, "invalid-coupon", userID)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "key not found", "존재하지 않은 쿠폰 발급 요청")
+	})
+
+	t.Run("쿠폰 발급 시작 전 요청 시 에러가 발생한다", func(t *testing.T) {
+		now := time.Now()
+		coupon := domain.Coupon{
+			ID:          couponID,
+			Name:        "테스트 발급 쿠폰",
+			IssueAmount: 10,
+			IssuedAt:    now.Add(time.Duration(5) * time.Hour),
+			ExpiresAt:   now.Add(time.Duration(10) * time.Hour),
+			CreatedAt:   now,
+			ModifiedAt:  now,
+		}
+
+		initCache(t, redisContainer, ctx, couponID, 10)
+		createCouponCache(ctx, redisContainer, couponID, coupon)
+
+		_, err := couponService.IssueCoupon(ctx, couponID, userID)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "coupon issuance has not started yet", "발급 시작 전 요청 시 발생")
+	})
+
+	t.Run("쿠폰 발급 종료 후 요청 시 에러가 발생한다", func(t *testing.T) {
+		now := time.Now()
+		coupon := domain.Coupon{
+			ID:          couponID,
+			Name:        "테스트 발급 쿠폰",
+			IssueAmount: 10,
+			IssuedAt:    now.Add(time.Duration(-15) * time.Hour),
+			ExpiresAt:   now.Add(time.Duration(-10) * time.Hour),
+			CreatedAt:   now,
+			ModifiedAt:  now,
+		}
+
+		initCache(t, redisContainer, ctx, couponID, 10)
+		createCouponCache(ctx, redisContainer, couponID, coupon)
+
+		_, err := couponService.IssueCoupon(ctx, couponID, userID)
+
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "the coupon issuance period has expired", "발급 만료 후 요청 시 발생")
 	})
 }
 
@@ -110,10 +182,42 @@ func initCache(
 	t *testing.T,
 	redisContainer *test.RedisContainer,
 	ctx context.Context,
-	couponKey string,
+	couponId string,
 	couponAmount int,
 ) {
 	_ = redisContainer.FlushAll(ctx)
-	err := redisContainer.Client.Set(ctx, couponKey, couponAmount, 0).Err()
+	err := redisContainer.Client.Set(ctx, genCouponIdKey(couponId), couponAmount, 0).Err()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	now := time.Now()
+	coupon := domain.Coupon{
+		ID:          couponId,
+		Name:        "테스트 발급 쿠폰",
+		IssueAmount: 10,
+		IssuedAt:    now.Add(time.Duration(-5) * time.Second),
+		ExpiresAt:   now.Add(time.Duration(1) * time.Hour),
+		CreatedAt:   now,
+		ModifiedAt:  now,
+	}
+	createCouponCache(ctx, redisContainer, couponId, coupon)
 	require.NoError(t, err)
+}
+
+func createCouponCache(
+	ctx context.Context,
+	redisContainer *test.RedisContainer,
+	couponId string,
+	data domain.Coupon,
+) {
+	jsonData, err := json.Marshal(data)
+	err = redisContainer.Client.Set(ctx, "coupon:"+couponId+":data", jsonData, 0).Err()
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+
+func genCouponIdKey(couponID string) string {
+	return fmt.Sprintf("coupon:%s:remaining", couponID)
 }
