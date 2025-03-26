@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/redis/go-redis/v9"
@@ -14,6 +15,7 @@ type Cache interface {
 	SetDel(ctx context.Context, key string, value string) (bool, error)
 	Set(ctx context.Context, key string, value interface{}) error
 	Get(ctx context.Context, key string) ([]byte, error)
+	Del(ctx context.Context, key string) error
 	Incr(ctx context.Context, key string) (int64, error)
 	Decr(ctx context.Context, key string) (int64, error)
 	ExpireAt(ctx context.Context, key string, expr time.Time) (bool, error)
@@ -49,7 +51,11 @@ func (c cache) SetDel(ctx context.Context, key string, value string) (bool, erro
 }
 
 func (c cache) Set(ctx context.Context, key string, value interface{}) error {
-	err := c.redisClient.Set(ctx, key, value, 0).Err()
+	data, marshalErr := json.Marshal(value)
+	if marshalErr != nil {
+		return marshalErr
+	}
+	err := c.redisClient.Set(ctx, key, data, 0).Err()
 	if err != nil {
 		fmt.Println(err)
 		return errors.New("occurred an error when setting value to cache")
@@ -69,6 +75,19 @@ func (c cache) Get(ctx context.Context, key string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+func (c cache) Del(ctx context.Context, key string) error {
+	err := c.redisClient.Del(ctx, key).Err()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			fmt.Println(err)
+			return errors.New("key not found")
+		}
+		fmt.Println(err)
+		return errors.New("occurred an error when deleting value from cache")
+	}
+	return nil
 }
 
 func (c cache) Incr(ctx context.Context, key string) (int64, error) {

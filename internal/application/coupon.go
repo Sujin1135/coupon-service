@@ -14,15 +14,18 @@ import (
 
 type CouponService struct {
 	cache                  cache.Cache
+	couponRepository       *repository.CouponRepository
 	issuedCouponRepository *repository.IssuedCouponRepository
 }
 
 func NewCouponService(
 	cacheClient *redis.Client,
+	couponRepository *repository.CouponRepository,
 	issuedCouponRepository *repository.IssuedCouponRepository,
 ) *CouponService {
 	return &CouponService{
 		cache:                  cache.NewCacheClient(cacheClient),
+		couponRepository:       couponRepository,
 		issuedCouponRepository: issuedCouponRepository,
 	}
 }
@@ -41,9 +44,20 @@ const (
 	IssuedCouponCreationError  = IssueCouponError("failed to create coupon code")
 )
 
+const (
+	FailedSaveCouponError        = CreateCouponError("failed to save coupon")
+	CouponDataRecoveryError      = CreateCouponError("failed to recover coupon")
+	CouponCacheDataRecoveryError = CreateCouponError("failed to recover coupon caching data")
+	CouponCacheError             = CreateCouponError("failed to cache coupon data")
+)
+
 type IssueCouponError string
 
 func (e IssueCouponError) Error() string { return string(e) }
+
+type CreateCouponError string
+
+func (e CreateCouponError) Error() string { return string(e) }
 
 func (c *CouponService) IssueCoupon(
 	ctx context.Context,
@@ -127,4 +141,69 @@ func (c *CouponService) controlConcurrent(
 		return AllCouponIssuedError
 	}
 	return nil
+}
+
+func (c *CouponService) CreateCoupon(
+	ctx context.Context,
+	name string,
+	amount int64,
+	issuedAt time.Time,
+	expiresAt time.Time,
+) (*domain.Coupon, error) {
+	coupon := domain.NewCoupon(name, amount, issuedAt, expiresAt)
+	err := c.couponRepository.Save(coupon)
+	if err != nil {
+		fmt.Println(err.Error())
+		return nil, FailedSaveCouponError
+	}
+	if err2 := c.cacheCouponData(ctx, coupon); err2 != nil {
+		return nil, err2
+	}
+	if err3 := c.cacheCouponCount(ctx, coupon); err3 != nil {
+		return nil, err3
+	}
+
+	return coupon, nil
+}
+
+func (c *CouponService) cacheCouponData(ctx context.Context, coupon *domain.Coupon) error {
+	err := c.cache.Set(ctx, genCouponDataKey(coupon.ID), coupon)
+	if err != nil {
+		fmt.Println(err.Error())
+
+		if err3 := c.couponRepository.Delete(coupon.ID); err3 != nil {
+			log.Println(err3.Error())
+			return CouponDataRecoveryError
+		}
+		return CouponCacheError
+	}
+	return nil
+}
+
+func (c *CouponService) cacheCouponCount(ctx context.Context, coupon *domain.Coupon) error {
+	err := c.cache.Set(ctx, genCouponAmountKey(coupon.ID), coupon.IssueAmount)
+	if err != nil {
+		fmt.Println(err.Error())
+
+		if err2 := c.couponRepository.Delete(coupon.ID); err2 != nil {
+			log.Println(err2.Error())
+			return CouponDataRecoveryError
+		}
+
+		if err3 := c.cache.Del(ctx, genCouponDataKey(coupon.ID)); err3 != nil {
+			log.Println(err3.Error())
+			return CouponCacheDataRecoveryError
+		}
+
+		return CouponCacheError
+	}
+	return nil
+}
+
+func genCouponDataKey(couponID string) string {
+	return fmt.Sprintf("coupon:%s:data", couponID)
+}
+
+func genCouponAmountKey(couponID string) string {
+	return fmt.Sprintf("coupon:%s:remaining", couponID)
 }

@@ -21,6 +21,7 @@ func main() {
 
 	couponService := application.NewCouponService(
 		config.CacheClient,
+		repository.NewCouponRepository(config.DBClient),
 		repository.NewIssuedCouponRepository(config.DBClient),
 	)
 	err = couponService.IssueCoupon(ctx, "coupon-1", "user-1")

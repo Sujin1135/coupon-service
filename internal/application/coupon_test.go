@@ -24,6 +24,7 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 	userID := uuid.New().String()
 	couponService := NewCouponService(
 		redisContainer.Client,
+		repository.NewCouponRepository(mysqlContainer.DB),
 		repository.NewIssuedCouponRepository(mysqlContainer.DB),
 	)
 
@@ -121,6 +122,7 @@ func TestCouponIssueWithContainer(t *testing.T) {
 	const userID = "same-user-1"
 	couponService := NewCouponService(
 		redisContainer.Client,
+		repository.NewCouponRepository(mysqlContainer.DB),
 		repository.NewIssuedCouponRepository(mysqlContainer.DB),
 	)
 
@@ -187,6 +189,75 @@ func TestCouponIssueWithContainer(t *testing.T) {
 	})
 }
 
+func TestCreateCouponWithContainer(t *testing.T) {
+	redisContainer, ctx := test.SetupRedisForTest(t)
+	mysqlContainer, ctx := test.SetupMySQLForTest(t)
+	couponService := NewCouponService(
+		redisContainer.Client,
+		repository.NewCouponRepository(mysqlContainer.DB),
+		repository.NewIssuedCouponRepository(mysqlContainer.DB),
+	)
+
+	mysqlContainer.MigrateEntities(&entity.CouponEntity{})
+
+	t.Run("쿠폰 생성 후 반환되는 에러가 없어야 한다", func(t *testing.T) {
+		now := time.Now()
+		_, err := couponService.CreateCoupon(
+			ctx,
+			"쿠폰발급 테스트",
+			10,
+			now.Add(time.Duration(-5)*time.Hour),
+			now.Add(time.Duration(5)*time.Hour),
+		)
+
+		assert.NoError(t, err)
+	})
+
+	t.Run("쿠폰 생성 후 캐싱 데이터가 조회 되어야 한다", func(t *testing.T) {
+		now := time.Now()
+		data, _ := couponService.CreateCoupon(
+			ctx,
+			"쿠폰발급 테스트",
+			10,
+			now.Add(time.Duration(-5)*time.Hour),
+			now.Add(time.Duration(5)*time.Hour),
+		)
+
+		var coupon domain.Coupon
+		cacheData, err2 := redisContainer.Client.Get(ctx, genCouponCacheKey(data.ID)).Bytes()
+		if err2 != nil {
+			assert.NoError(t, err2)
+		}
+		if err3 := json.Unmarshal(cacheData, &coupon); err3 != nil {
+			assert.NoError(t, err3)
+		}
+
+		assert.Equal(t, data.ID, coupon.ID)
+		assert.Equal(t, data.Name, coupon.Name)
+		assert.True(t, data.IssuedAt.Equal(coupon.IssuedAt))
+		assert.True(t, data.ExpiresAt.Equal(coupon.ExpiresAt))
+		assert.Equal(t, data.IssueAmount, coupon.IssueAmount)
+	})
+
+	t.Run("쿠폰 생성 후 쿠폰 수량 캐싱 데이터가 조회 되어야 한다", func(t *testing.T) {
+		now := time.Now()
+		data, _ := couponService.CreateCoupon(
+			ctx,
+			"쿠폰발급 테스트",
+			10,
+			now.Add(time.Duration(-5)*time.Hour),
+			now.Add(time.Duration(5)*time.Hour),
+		)
+
+		amount, err2 := redisContainer.Client.Get(ctx, genCouponIdKey(data.ID)).Int()
+		if err2 != nil {
+			assert.NoError(t, err2)
+		}
+
+		assert.Equal(t, data.IssueAmount, int64(amount))
+	})
+}
+
 func initCache(
 	t *testing.T,
 	redisContainer *test.RedisContainer,
@@ -229,4 +300,8 @@ func createCouponCache(
 
 func genCouponIdKey(couponID string) string {
 	return fmt.Sprintf("coupon:%s:remaining", couponID)
+}
+
+func genCouponCacheKey(couponID string) string {
+	return fmt.Sprintf("coupon:%s:data", couponID)
 }

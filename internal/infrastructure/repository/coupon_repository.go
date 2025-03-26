@@ -18,6 +18,27 @@ func NewCouponRepository(db *gorm.DB) *CouponRepository {
 	}
 }
 
+func (r *CouponRepository) Save(domain *domain.Coupon) error {
+	return r.db.Save(&entity.CouponEntity{
+		ID:          domain.ID,
+		Name:        domain.Name,
+		IssueAmount: domain.IssueAmount,
+		IssuedAt:    domain.IssuedAt,
+		ExpiresAt:   domain.ExpiresAt,
+		CreatedAt:   domain.CreatedAt,
+		ModifiedAt:  domain.ModifiedAt,
+		DeletedAt:   nil,
+	}).Error
+}
+
+func (r *CouponRepository) Delete(id string) error {
+	result := r.db.Where("id = ?", id).Delete(id)
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
+}
+
 func (r *CouponRepository) FindOne(id string) (*domain.Coupon, error) {
 	var couponEntity entity.CouponEntity
 	err := r.db.Where(
