@@ -298,6 +298,12 @@ func TestGetCouponWithContainer(t *testing.T) {
 		assert.Equal(t, successCount, len(sut.IssuedCoupons))
 		assert.Equal(t, coupon.IssueAmount, int64(len(sut.IssuedCoupons)))
 	})
+
+	t.Run("존재하지 않는 ID로 쿠폰 조회 요청 시 쿠폰을 찾을 수 없다는 에러가 발생한다", func(t *testing.T) {
+		_, err := couponService.GetCoupon(uuid.New().String())
+
+		assert.Equal(t, err, CouponNotFoundError)
+	})
 }
 
 func initCache(
