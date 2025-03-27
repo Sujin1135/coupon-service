@@ -147,9 +147,9 @@ func (s *GreetServiceHandler) GetCampaign(
 	_ context.Context,
 	req *connect.Request[svcpb.GetCampaignRequest],
 ) (*connect.Response[svcpb.GetCampaignResponse], error) {
-	name := req.Msg.Name
+	id := req.Msg.Id
 
-	campaign, err := s.couponService.GetCoupon(name)
+	campaign, err := s.couponService.GetCoupon(id)
 	if err != nil {
 		message := "campaign not found"
 		return connect.NewResponse(&svcpb.GetCampaignResponse{

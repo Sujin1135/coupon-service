@@ -2,6 +2,7 @@ package main
 
 import (
 	"coupon-service/internal/config"
+	"coupon-service/internal/infrastructure/entity"
 	"fmt"
 	"log"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
+	"gorm.io/gorm"
 
 	"coupon-service/api/grpc/service"
 	"coupon-service/internal/application"
@@ -21,6 +23,10 @@ func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
+	}
+
+	if err := autoMigrate(config.DBClient); err != nil {
+		log.Fatalf("failed to migrate this project's database: %v", err)
 	}
 
 	redisClient := redis.NewClient(&redis.Options{
@@ -58,6 +64,25 @@ func main() {
 	); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
+}
+
+func autoMigrate(db *gorm.DB) error {
+	couponTableExists := db.Migrator().HasTable(&entity.CouponEntity{})
+	issuedCouponTableExists := db.Migrator().HasTable(&entity.IssuedCouponEntity{})
+
+	if couponTableExists && issuedCouponTableExists {
+		log.Println("데이터베이스 테이블이 이미 존재합니다. 마이그레이션을 건너뜁니다.")
+		return nil
+	}
+
+	log.Println("데이터베이스 마이그레이션을 실행합니다...")
+
+	if err := db.AutoMigrate(&entity.CouponEntity{}, &entity.IssuedCouponEntity{}); err != nil {
+		return fmt.Errorf("자동 마이그레이션 실패: %w", err)
+	}
+
+	log.Println("데이터베이스 마이그레이션이 성공적으로 완료되었습니다.")
+	return nil
 }
 
 func addMiddleware(handler http.Handler) http.Handler {
