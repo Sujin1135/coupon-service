@@ -59,38 +59,13 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 
 		initCache(t, redisContainer, ctx, couponID, couponLimit)
 
-		var wg sync.WaitGroup
-		successCount := 0
-		failCount := 0
-		var mu sync.Mutex
-
-		for i := 0; i < numUsers; i++ {
-			wg.Add(1)
-			userID := uuid.New().String()
-
-			go func(uid string) {
-				defer wg.Done()
-
-				err := couponService.IssueCoupon(ctx, couponID, uid)
-
-				mu.Lock()
-				defer mu.Unlock()
-
-				if err != nil {
-					failCount++
-				} else {
-					successCount++
-				}
-			}(userID)
-		}
-
-		wg.Wait()
+		failureCount, successCount := addIssuedCouponsByUserCount(numUsers, couponService, ctx, couponID)
 
 		count, err := redisContainer.Client.Get(ctx, genCouponIdKey(couponID)).Int()
 		assert.NoError(t, err)
 		assert.Equal(t, 0, count, "모든 쿠폰이 소진되어야 함")
 		assert.Equal(t, couponLimit, successCount, fmt.Sprintf("정확히 %d명만 쿠폰을 발급받아야 함\n", couponLimit))
-		assert.Equal(t, numUsers-couponLimit, failCount, fmt.Sprintf("나머지 %d명은 실패해야 함\n", numUsers-couponLimit))
+		assert.Equal(t, numUsers-couponLimit, failureCount, fmt.Sprintf("나머지 %d명은 실패해야 함\n", numUsers-couponLimit))
 
 		setSize, err := redisContainer.Client.SCard(ctx, userStoreKey).Result()
 		assert.NoError(t, err)
@@ -113,6 +88,37 @@ func TestCouponIssueConcurrencyWithContainer(t *testing.T) {
 		assert.NoError(t, err)
 		assert.Equal(t, 0, count, "카운터는 0을 유지해야 함")
 	})
+}
+
+func addIssuedCouponsByUserCount(numUsers int, couponService *CouponService, ctx context.Context, couponID string) (int, int) {
+	var successCount = 0
+	var failureCount = 0
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	for i := 0; i < numUsers; i++ {
+		wg.Add(1)
+		userID := uuid.New().String()
+
+		go func(uid string) {
+			defer wg.Done()
+
+			err := couponService.IssueCoupon(ctx, couponID, uid)
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			if err != nil {
+				failureCount++
+			} else {
+				successCount++
+			}
+		}(userID)
+	}
+
+	wg.Wait()
+	return failureCount, successCount
 }
 
 func TestCouponIssueWithContainer(t *testing.T) {
@@ -255,6 +261,42 @@ func TestCreateCouponWithContainer(t *testing.T) {
 		}
 
 		assert.Equal(t, data.IssueAmount, int64(amount))
+	})
+}
+
+func TestGetCouponWithContainer(t *testing.T) {
+	redisContainer, ctx := test.SetupRedisForTest(t)
+	mysqlContainer, ctx := test.SetupMySQLForTest(t)
+	couponService := NewCouponService(
+		redisContainer.Client,
+		repository.NewCouponRepository(mysqlContainer.DB),
+		repository.NewIssuedCouponRepository(mysqlContainer.DB),
+	)
+
+	mysqlContainer.MigrateEntities(&entity.CouponEntity{}, &entity.IssuedCouponEntity{})
+
+	t.Run("발행량이 10개 제한 쿠폰에 100명의 유저가 쿠폰 발행을 요청 후 쿠폰 데이터를 조회하면 10개의 쿠폰만 발행되어 조회 되어야 한다", func(t *testing.T) {
+		now := time.Now()
+		coupon, err := couponService.CreateCoupon(
+			ctx,
+			"쿠폰발급 테스트",
+			10,
+			now.Add(time.Duration(-5)*time.Hour),
+			now.Add(time.Duration(5)*time.Hour),
+		)
+		if err != nil {
+			assert.FailNow(t, err.Error())
+		}
+
+		userCount := 100
+		_, successCount := addIssuedCouponsByUserCount(userCount, couponService, ctx, coupon.ID)
+
+		sut, err2 := couponService.GetCoupon(coupon.ID)
+		if err2 != nil {
+			assert.FailNow(t, err2.Error())
+		}
+		assert.Equal(t, successCount, len(sut.IssuedCoupons))
+		assert.Equal(t, coupon.IssueAmount, int64(len(sut.IssuedCoupons)))
 	})
 }
 

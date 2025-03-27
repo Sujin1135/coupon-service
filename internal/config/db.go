@@ -26,7 +26,7 @@ func init() {
 		Logger: logger.Default.LogMode(logger.Info),
 	})
 	if err != nil {
-		panic(fmt.Errorf("GORM MySQL 연결 실패: %w", err))
+		fmt.Printf("failed to connect database: %v\n", err.Error())
 	}
 
 	sqlDB, err := DBClient.DB()

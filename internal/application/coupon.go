@@ -51,6 +51,10 @@ const (
 	CouponCacheError             = CreateCouponError("failed to cache coupon data")
 )
 
+const (
+	CouponNotFoundError = GetCouponError("coupon not found")
+)
+
 type IssueCouponError string
 
 func (e IssueCouponError) Error() string { return string(e) }
@@ -58,6 +62,10 @@ func (e IssueCouponError) Error() string { return string(e) }
 type CreateCouponError string
 
 func (e CreateCouponError) Error() string { return string(e) }
+
+type GetCouponError string
+
+func (e GetCouponError) Error() string { return string(e) }
 
 func (c *CouponService) IssueCoupon(
 	ctx context.Context,
@@ -107,6 +115,16 @@ func (c *CouponService) CreateCoupon(
 		return nil, err3
 	}
 
+	return coupon, nil
+}
+
+func (c *CouponService) GetCoupon(id string) (*domain.Coupon, error) {
+	coupon, err := c.couponRepository.FindOne(id)
+	if err != nil {
+		fmt.Println(err.Error())
+		return nil, CouponNotFoundError
+	}
+	coupon.IssuedCoupons = c.issuedCouponRepository.FindByCouponId(id)
 	return coupon, nil
 }
 
