@@ -87,6 +87,29 @@ func (c *CouponService) IssueCoupon(
 	return nil
 }
 
+func (c *CouponService) CreateCoupon(
+	ctx context.Context,
+	name string,
+	amount int64,
+	issuedAt time.Time,
+	expiresAt time.Time,
+) (*domain.Coupon, error) {
+	coupon := domain.NewCoupon(name, amount, issuedAt, expiresAt)
+	err := c.couponRepository.Save(coupon)
+	if err != nil {
+		fmt.Println(err.Error())
+		return nil, FailedSaveCouponError
+	}
+	if err2 := c.cacheCouponData(ctx, coupon); err2 != nil {
+		return nil, err2
+	}
+	if err3 := c.cacheCouponCount(ctx, coupon); err3 != nil {
+		return nil, err3
+	}
+
+	return coupon, nil
+}
+
 func (c *CouponService) validateCouponEvent(ctx context.Context, dataKey string, now time.Time) error {
 	var coupon domain.Coupon
 	data, err := c.cache.Get(ctx, dataKey)
@@ -141,29 +164,6 @@ func (c *CouponService) controlConcurrent(
 		return AllCouponIssuedError
 	}
 	return nil
-}
-
-func (c *CouponService) CreateCoupon(
-	ctx context.Context,
-	name string,
-	amount int64,
-	issuedAt time.Time,
-	expiresAt time.Time,
-) (*domain.Coupon, error) {
-	coupon := domain.NewCoupon(name, amount, issuedAt, expiresAt)
-	err := c.couponRepository.Save(coupon)
-	if err != nil {
-		fmt.Println(err.Error())
-		return nil, FailedSaveCouponError
-	}
-	if err2 := c.cacheCouponData(ctx, coupon); err2 != nil {
-		return nil, err2
-	}
-	if err3 := c.cacheCouponCount(ctx, coupon); err3 != nil {
-		return nil, err3
-	}
-
-	return coupon, nil
 }
 
 func (c *CouponService) cacheCouponData(ctx context.Context, coupon *domain.Coupon) error {
